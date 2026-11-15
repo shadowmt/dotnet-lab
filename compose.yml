@@ -1,0 +1,33 @@
+services:
+  db:
+    image: docker.io/library/postgres:17
+    container_name: dotnet-lab-db
+    environment:
+      POSTGRES_DB: lab
+      POSTGRES_USER: app
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - dotnet-lab-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d lab"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  
+  api:
+    build:
+      context: ./NotesApi
+      dockerfile: Dockerfile
+    container_name: notes-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CONNECTIONSTRINGS__NOTESDB: "Host=db;Port=5432;Database=lab;Username=app"
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  dotnet-lab-pgdata:

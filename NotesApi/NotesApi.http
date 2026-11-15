@@ -1,0 +1,53 @@
+@NotesApi_HostAddress = http://localhost:5245
+
+### Health
+GET {{NotesApi_HostAddress}}/health
+
+### 一覧（既定値）
+GET {{NotesApi_HostAddress}}/notes
+
+### 一覧（ページング）
+GET {{NotesApi_HostAddress}}/notes?skip=0&take=1
+
+### 作成
+# @name createNote
+POST {{NotesApi_HostAddress}}/notes
+Content-Type: application/json
+
+{
+  "station": "テスト駅",
+  "type": null,
+  "body": "Notes.httpから作成",
+  "severity": 3
+}
+
+### 作成したメモを取得
+GET {{NotesApi_HostAddress}}/notes/{{createNote.response.body.$.id}}
+
+### 作成したメモを更新
+PATCH {{NotesApi_HostAddress}}/notes/{{createNote.response.body.$.id}}
+Content-Type: application/json
+
+{
+  "body": "Notes.httpから更新"
+}
+
+### 負ケース: ページサイズ超過（400）
+GET {{NotesApi_HostAddress}}/notes?take=101
+
+### 負ケース: Severity範囲外（400）
+POST {{NotesApi_HostAddress}}/notes
+Content-Type: application/json
+
+{
+  "station": "テスト駅",
+  "type": null,
+  "body": "不正なSeverity",
+  "severity": 6
+}
+
+### 負ケース: 空PATCH（400）
+PATCH {{NotesApi_HostAddress}}/notes/{{createNote.response.body.$.id}}
+Content-Type: application/json
+
+{}
