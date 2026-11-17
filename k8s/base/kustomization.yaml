@@ -21,4 +21,4 @@ resources:
 images:
 - name: notes-api
   newName: ghcr.io/shadowmt/notes-api
-  newTag: 5b17305
+  newTag: cbe304f
