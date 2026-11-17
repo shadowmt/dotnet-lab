@@ -327,7 +327,7 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 ### 合格条件（実測）
 - [ ] Phase 0: `kubectl get nodes` が Ready。podman build したイメージをクラスタへ供給し smoke Pod が Succeeded（①②は実施メモ参照）
 - [x] Phase 1: k8s マニフェストで api + postgres が起動。`/healthz/ready` 200、POST/GET ラウンドトリップ、Pod 再作成後もデータ残存（PVC 実証）
-- [ ] Phase 2: CI がビルドして ghcr.io へ push（公開パッケージ。手元 `podman pull` が匿名で成功すること）
+- [x] Phase 2: CI がビルドして ghcr.io へ push（公開パッケージ。手元 `podman pull` が匿名で成功すること）
 - [ ] Phase 3: マイグレーションが単発 PreSync Job 化。Job Completed → API Pod Healthy の順が守られる
 - [ ] Phase 4: ArgoCD（v3.6.1）で Application が Synced/Healthy（手動 sync）
 - [ ] Phase 5: auto-sync 有効化。main へ 1 push → 約 5 分以内にクラスタの Deployment image が新しい sha へ一致＝自動デプロイ完成
@@ -353,3 +353,8 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 - postgres は RWO PVC のため `strategy: Recreate`（新 Pod が先に上がってボリュームを掴みにいくのを防ぐ）と PVC の `subPath` マウント（lost+found による PGDATA 汚染回避）が必須だった。
 - 判明した残件: API 初回は EF マイグレーション未適用のため DB 参照が 500 になる。この場はホスト側の dotnet ef database update（port-forward 経由）で切り抜けたが、これは恒久手順ではない → Phase 3 の単発 PreSync Job で自動化する（実測で消えるまで Phase 3 完了とみなさない）。
 - Secret（notes-api-config）は学習用として平文のまま Git 管理（ファイル内に注記）。ローカル専用クラスタとダミーパスワード前提の割り切り。本番なら ExternalSecrets 等へ。
+
+2026-11-17 Phase 2 実施（PASS）:
+- CI に build-push ジョブ（needs: test、main への push のみ実行）を追加。ワークフロー最上位で `permissions: contents: read / packages: write` を明示（無ければ ghcr push が 403 になる）。イメージタグは ghcr.io/shadowmt/notes-api:<sha 先頭 7 文字>。SHORT_SHA は run ステップから $GITHUB_ENV へ書き出して後続 step の env で参照する定型（env: にシェル展開 $(...) を書いても字面化されて動かない、Actions の罠）。
+- 実測: run 44025163230（commit 3bc4150）で test / build-push とも success、push 先 digest sha256:85e1fe858ca3… をログから確認。
+- 匿名 pull ゲート: ログイン無しの手元 podman で ghcr.io/shadowmt/notes-api:3bc4150 が exit 0 で pull でき、manifest の config digest が CI の push digest と一致。**パッケージはリポジトリ（public）の可視性を継承して自動作成され、手動の public 化操作は不要だった**（初回 push 時点から匿名 pull 可）。
