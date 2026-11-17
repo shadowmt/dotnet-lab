@@ -317,3 +317,4 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 5. ローカル実行（podman 5.7 / WSL）: `systemctl --user enable --now podman.socket` 済み。手で叩くときだけ `DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock` を export。`createdb` 手順・`lab_test` 削除運用は不要になった。
 6. 実測: 初回 `dotnet test` 12 秒で PASS（イメージ pull + コンテナ起動込み）、2 回目 1 秒台 PASS、2 回実行後も残余コンテナなし。
 7. 未実施: remote への push と GitHub Actions 初回実測（人間の判断待ち）。
+8. 2026-11-17 再検証: Task 5 の教訓（ConfigureAppConfiguration 案は Program が使う接続先を上書きできない）は Testcontainers 化後も有効なまま。`ConfigureWebHost` 内の `builder.ConfigureAppConfiguration` で `ConnectionStrings:NotesDb` をコンテナ値へ差し替える変種をスクラッチ probe で実測し、登録済み DbContext の接続文字列は依然 `Database=lab` に解決された（probe は接続文字列文字列の読み取りのみで DB には一切接続していない）。なお Mvc.Testing 10.0.4 では `WebApplicationFactory.ConfigureAppConfiguration(IConfigurationBuilder)` の単一引数オーバーライドは廃止されており、オーバーライドはコンパイル不可。config 系の実験は必ず `ConfigureWebHost` 経由で書くこと。
