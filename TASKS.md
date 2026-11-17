@@ -305,3 +305,15 @@ podman exec dotnet-lab-db pg_isready -U app -d lab：PostgreSQLの接続受付�
 podman exec dotnet-lab-db createdb -U app lab_test：テスト用DBを作成
 podman exec dotnet-lab-db psql -U app -d postgres -c '\l'：DB一覧を表示
 podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一覧を表示
+
+---
+
+## 実施メモ（Testcontainers 化 / GitHub Actions CI、2026-11-17）
+
+1. `NotesApi.Tests` の DB を手動 `createdb lab_test` 運用から、Testcontainers（`Testcontainers.PostgreSql 4.17.0` + 明示 `Npgsql 10.0.3`）による使い捨て `postgres:17` コンテナへ移行。DB 名は `WithDatabase("ci_test")`。ホスト側ポートは毎回ランダム採番で、5432 を他のローカルコンテナに占有されている環境でも実測で同居できた。
+2. 接続文字列はもうコードに直書きしない。`PostgreSqlContainer.StartAsync()` → `GetConnectionString()` を fixture が採番し、`ConfigureTestServices` の 4 RemoveAll（Task 5 通過構成は維持）で DbContext を丸ごと差し替える。誤って dev DB `lab` へ繋がる経路がコード上無くなる。
+3. 従来の `Assert.Equal("lab_test", ...)` は、アプリ接続文字列（`db.Database.GetConnectionString()`）と fixture（コンテナ）接続文字列の Host/Port 一致検証に置き換えた。dev DB 誤接続時はこの assert で落ちる。
+4. CI を `.github/workflows/test.yml`（checkout / setup-dotnet@v6 / dotnet test の 3 ステップ、service container なし）に追加。GitHub-hosted ubuntu ランナーは docker 同梱のため追加設定は不要（Testcontainers 公式 docs/cicd 準拠）。
+5. ローカル実行（podman 5.7 / WSL）: `systemctl --user enable --now podman.socket` 済み。手で叩くときだけ `DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock` を export。`createdb` 手順・`lab_test` 削除運用は不要になった。
+6. 実測: 初回 `dotnet test` 12 秒で PASS（イメージ pull + コンテナ起動込み）、2 回目 1 秒台 PASS、2 回実行後も残余コンテナなし。
+7. 未実施: remote への push と GitHub Actions 初回実測（人間の判断待ち）。

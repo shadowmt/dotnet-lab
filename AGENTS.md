@@ -27,7 +27,7 @@ dotnet-lab/
 | エンドポイント追加 | `NotesApi/Program.cs` | コントローラなし。Minimal API のみ |
 | ビジネス処理 | `NotesApi/NoteService.cs` + `INoteService.cs` | Service 層が DbContext を持つ構成が確定形 |
 | 検証規則（Pydantic 相当） | DTO の DataAnnotations | `CreateNoteRequest.cs` / `PatchNoteRequest.cs` |
-| DB 接続先 | dev: `appsettings.Development.json` / compose: `CONNECTIONSTRINGS__NOTESDB` env / test: `NotesApi.Tests/NotesApiFactory.cs` | 3 経路で接続先が別れる |
+| DB 接続先 | dev: `appsettings.Development.json` / compose: `CONNECTIONSTRINGS__NOTESDB` env / test: `NotesApi.Tests/NotesApiFactory.cs`（Testcontainers） | 3 経路で接続先が別れる。test の接続文字列はコード直書きでなくテスト用コンテナ起動時に採番 |
 | 手元 DB 確認 | `podman exec dotnet-lab-db psql -U app -d lab -c '\dt'` | docker でなく **podman**（`docker` は未インストール） |
 | 学習状況の確認 | `TASKS.md` の `[x]` | Task 0-3,5,6,7,8 完了済み（未: Task 4 の合格判定・Task 9 任意） |
 
@@ -40,13 +40,13 @@ dotnet-lab/
 | `NotesDbContext` | class | `NotesApi/NotesDbContext.cs:5` | 9 | `DbSet<Note> Notes => Set<Note>()`。dev/test/compose 共通 |
 | `Note` | class | `NotesApi/Note.cs:3` | 3 | EF エンティティ。`required` + `string?` で null 可能性を明示 |
 | `CreateNoteRequest` / `PatchNoteRequest` / `NoteResponse` | record | `NotesApi/*.cs` | 4/4/15 | 入出力 DTO。JSON 契約のためパラメータ名が camelCase |
-| `NotesApiFactory` | sealed class | `NotesApi.Tests/NotesApiFactory.cs:11` | 2 | `WebApplicationFactory<Program>`。test DB を `lab_test` に差し替え |
+| `NotesApiFactory` / `PostgresContainer` | sealed class | `NotesApi.Tests/NotesApiFactory.cs:32` / `:12` | 2 | `WebApplicationFactory<Program>` + Testcontainers 使い捨て `postgres:17`（DB 名 `ci_test`）供給 |
 
 エンドポイント一覧（DELETE は存在しない）: `GET /health` / `GET /notes?skip=&take=` / `GET /notes/{id:int}` / `POST /notes` / `PATCH /notes/{id:int}`
 
 ## CONVENTIONS
 - **WSL 開発の鉄則**: プロジェクトは WSL 側に置き、build / run も必ず WSL 側。Windows 側の .NET で `\\wsl.localhost` 越しに build すると `bin/obj` の静的資産マニフェストに UNC パスが書かれ、WSL 側の起動が `ArgumentException: The path must be absolute (Parameter 'root')` でクラッシュする。汚染時は `bin/obj` の staticwebassets 系を削除して WSL 側で再 build（`TASKS.md:52`）。
-- **DB は使い分け、削除対象は厳格**: dev = `lab` / test = `lab_test` / compose = `lab`。テストでは `lab` に接続も削除もしない。再作成してよいのは `lab_test` のみ（`TASKS.md:233-234`）。
+- **DB は使い分け、削除対象は厳格**: dev = `lab` / compose = `lab`。テスト DB は Testcontainers の使い捨てコンテナ（名 `ci_test`・ホスト側ポートランダム）で、`lab_test` 作成/削除の運用は廃止。テストは `lab` に接続しない（アプリ側 DbContext 登録を RemoveAll → 再登録する設計自体が保証、`NotesApi.Tests/AGENTS.md`）。
 - **検証は `AddValidation()` + `AddProblemDetails()` + `UseStatusCodePages()`** の 3 点セットで成立させる。このプロジェクトの .NET 10 参照では `.WithValidation()` と `app.UseProblemDetails()` はビルドエラーになる（`TASKS.md:77`, `TASKS.md:117`）。
 - **DTO の record パラメータは camelCase が既定**。C# 慣習は PascalCase だが JSON 契約を壊さないため意図的に据え置き（`TASKS.md:162`）。リネームは判断を明示してから。
 - **パッケージのバージョンは 10 系にピン留め**。`dotnet add package` でバージョンを省略すると `Microsoft.EntityFrameworkCore.Design` に `net10.0` 非対応の 11.0.0 が選ばれ失敗した実績（`TASKS.md:121-125`）。
@@ -85,9 +85,9 @@ podman exec dotnet-lab-db pg_isready -U app -d lab   # accepting connections を
 # EF Core マイグレーション（グローバルツール 10.0.4 / NotesApi/ で実行）
 cd NotesApi && dotnet ef migrations add <Name> && dotnet ef database update
 
-# 統合テスト（先に lab_test が必要）
-podman exec dotnet-lab-db createdb -U app lab_test
-dotnet test NotesApi.Tests/NotesApi.Tests.csproj     # 再現確認は dropdb/createdb lab_test から
+# 統合テスト（DB は Testcontainers が自動起動。事前の createdb 不要）
+export DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock   # podman 利用時（docker バイナリなしで可）
+dotnet test NotesApi.Tests/NotesApi.Tests.csproj     # CI と同一手順（.github/workflows/test.yml）
 
 # コンテナ一式（API は http://127.0.0.1:8080 / Production なので /scalar なし）
 podman compose up -d --build
@@ -101,3 +101,4 @@ curl -s http://127.0.0.1:8080/health
 - `dotnet ef database update` 初回、`__EFMigrationsHistory` への SELECT エラーがログに出るが適用は成功する。**ログだけで決めず DB を確認**する。
 - `.csproj` の CRLF 改行は Linux 側ビルドに支障なし → 変更しない（`TASKS.md:161`）。
 - dev DB `lab` には過去の実測用レコードが残っている。テストデータと混同するな。
+- テスト DB イメージは `postgres:17`（compose と同一 tag へ統一）。Testcontainers 4.10.0 以降はイメージ名指定が必須のため。手元 podman ソケット（user unit）は起動済み・手動実行時は `DOCKER_HOST` の export が必要。

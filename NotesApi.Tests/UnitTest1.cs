@@ -2,6 +2,7 @@
 using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 
 namespace NotesApi.Tests;
 
@@ -13,7 +14,11 @@ public class NotesApiIntegrationTests(NotesApiFactory factory): IClassFixture<No
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<NotesDbContext>();
-            Assert.Equal("lab_test", db.Database.GetDbConnection().Database);
+            var fixtureCs = new NpgsqlConnectionStringBuilder(factory.Postgres.ConnectionString);
+            var appCs = new NpgsqlConnectionStringBuilder(db.Database.GetConnectionString());
+            Assert.Equal(fixtureCs.Host, appCs.Host);
+            Assert.Equal(fixtureCs.Port, appCs.Port);
+            Assert.Equal("ci_test", fixtureCs.Database);
             await db.Database.MigrateAsync();
             await db.Notes.ExecuteDeleteAsync();
         }
