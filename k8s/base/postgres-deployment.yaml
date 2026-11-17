@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  # RWO の PVC を単一レプリカで使うため、ローリング updates で新規 Pod が先に上がって
+  # ボリュームを掴みにいく挙動を避け、常に旧 Pod を落としてから新 Pod を起こす。
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres:17
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_USER
+              value: notes
+            - name: POSTGRES_DB
+              value: notesdb
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: notes-api-config
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            # subPath を付けないと PVC ルートの lost+found が PGDATA を汚れさせ初期化が失敗する
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "notes", "-d", "notesdb"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: notes-db-data

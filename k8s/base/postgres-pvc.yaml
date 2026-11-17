@@ -1,0 +1,11 @@
+# minikube 既定の storage-provisioner（hostPath）に自動バインドさせるため storageClassName は指定しない。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: notes-db-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

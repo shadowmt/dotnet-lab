@@ -1,0 +1,22 @@
+# notes-api + PostgreSQL 17 の基礎マニフェスト。すべて namespace=notes に固定。
+# 適用: kubectl -n notes apply -k k8s/base
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: notes
+
+resources:
+  - namespace.yaml
+  - secret.yaml
+  - postgres-pvc.yaml
+  - postgres-service.yaml
+  - postgres-deployment.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+
+# マニフェスト上の image 名 notes-api を、podman build 済みで minikube に読み込んだ
+# ローカルイメージ名（localhost/notes-api:local-dev）へ差し替える。
+images:
+  - name: notes-api
+    newName: localhost/notes-api
+    newTag: local-dev
