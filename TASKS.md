@@ -326,7 +326,7 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 
 ### 合格条件（実測）
 - [ ] Phase 0: `kubectl get nodes` が Ready。podman build したイメージをクラスタへ供給し smoke Pod が Succeeded（①②は実施メモ参照）
-- [ ] Phase 1: k8s マニフェストで api + postgres が起動。`/healthz/ready` 200、POST/GET ラウンドトリップ、Pod 再作成後もデータ残存（PVC 実証）
+- [x] Phase 1: k8s マニフェストで api + postgres が起動。`/healthz/ready` 200、POST/GET ラウンドトリップ、Pod 再作成後もデータ残存（PVC 実証）
 - [ ] Phase 2: CI がビルドして ghcr.io へ push（公開パッケージ。手元 `podman pull` が匿名で成功すること）
 - [ ] Phase 3: マイグレーションが単発 PreSync Job 化。Job Completed → API Pod Healthy の順が守られる
 - [ ] Phase 4: ArgoCD（v3.6.1）で Application が Synced/Healthy（手動 sync）
@@ -346,3 +346,10 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 - ① プロファイルのアップグレード: minikube v1.39.0（現行安定）で v1.37.0 作成のプロファイルを `minikube start` すると、そのまま再利用できた（`minikube delete` 不要・ノードコンテナは 6d19h のまま健在）。起動ログに `MINIKUBE_ROOTLESS=true` と出るとおり rootless podman が自動判定され、**パスワードなし sudo／sudoers 変更は一切不要**（`/etc/subuid` の 100000:65536 設定は済んでいた）。`kubectl get nodes` Ready（k8s v1.37.0 / containerd 2.3.4 / 192.168.49.2）。なお `Error downloading kic artifacts: not yet implemented` は既知の无害ログノイズ（kubernetes/minikube#8426）で、base image pull 自体は成功している。ログで決めない教訓（Task 5）の k8s 版。
 - ② イメージ供給: `minikube image load` に `DOCKER_HOST` を渡さないと、参照の `localhost/` を**レジストリホスト名として解釈**し `https://localhost/v2/` へタイムアウト到達後に「not found」と化ける（しかも exit 0。失敗の検知は `minikube image ls` の実査で行う）。手順は `systemctl --user start podman`（socket は idle 時 inactive になり得る）→ `DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock minikube image load localhost/<tag>` → `minikube image ls | grep <tag>` で載ったことを確認。smoke Pod は imagePullPolicy=IfNotPresent で Succeeded、logs に hello、imageID は podman build のイメージ ID と一致。**podman build 既定の OCI 形式のまま変換不要**（docs が警戒した `--format docker` は不要と実証）。
 - ③ ingress アドオン×podman ドライバは未実測のまま Phase 4 ゲートへ持ち越し（公式に可否の記載なし）。
+
+2026-11-17 Phase 1 実施（PASS）:
+- `k8s/base/` に kustomize 一式（namespace/secret/PVC/postgres+api の Deployment/Service）を新設し、namespace=notes へ `kubectl -n notes apply -k k8s/base` で適用。api Service は 80→targetPort 8080（Dockerfile の ASPNETCORE_HTTP_PORTS=8080 と一致）。実測: `/healthz/ready`・`/healthz/live` とも 200（既存 `/health` も 200 のまま）、POST→GET で応答データ確認、`kubectl delete pod -l app=postgres` からの再作成後も POST データが残存し ID シーケンスも続いていた（PVC 永続化の実証）。`dotnet test` は変更後も green。
+- Program.cs の追加は MapHealthChecks の 2 エンドポイントのみ。はまった点: `HealthCheckOptions` は `Microsoft.AspNetCore.Diagnostics.HealthChecks` 側の型で、`Microsoft.Extensions.Diagnostics.HealthChecks` だけではビルドエラー（CS0246）。
+- postgres は RWO PVC のため `strategy: Recreate`（新 Pod が先に上がってボリュームを掴みにいくのを防ぐ）と PVC の `subPath` マウント（lost+found による PGDATA 汚染回避）が必須だった。
+- 判明した残件: API 初回は EF マイグレーション未適用のため DB 参照が 500 になる。この場はホスト側の dotnet ef database update（port-forward 経由）で切り抜けたが、これは恒久手順ではない → Phase 3 の単発 PreSync Job で自動化する（実測で消えるまで Phase 3 完了とみなさない）。
+- Secret（notes-api-config）は学習用として平文のまま Git 管理（ファイル内に注記）。ローカル専用クラスタとダミーパスワード前提の割り切り。本番なら ExternalSecrets 等へ。
