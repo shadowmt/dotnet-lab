@@ -24,8 +24,9 @@ spec:
             - containerPort: 8080
               name: http
           env:
+            # localhost 限定の学習クラスタでは利便性優先で Development を明示（/scalar・OpenAPI 有効、詳細エラーも localhost 露出）。compose は不変で Production
             - name: ASPNETCORE_ENVIRONMENT
-              value: Production
+              value: Development
           envFrom:
             - secretRef:
                 name: notes-api-config
