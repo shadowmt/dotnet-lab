@@ -328,7 +328,7 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 - [ ] Phase 0: `kubectl get nodes` が Ready。podman build したイメージをクラスタへ供給し smoke Pod が Succeeded（①②は実施メモ参照）
 - [x] Phase 1: k8s マニフェストで api + postgres が起動。`/healthz/ready` 200、POST/GET ラウンドトリップ、Pod 再作成後もデータ残存（PVC 実証）
 - [x] Phase 2: CI がビルドして ghcr.io へ push（公開パッケージ。手元 `podman pull` が匿名で成功すること）
-- [ ] Phase 3: マイグレーションが単発 PreSync Job 化。Job Completed → API Pod Healthy の順が守られる
+- [x] Phase 3: マイグレーションが単発 PreSync Job 化。Job Completed → API Pod Healthy の順が守られる
 - [ ] Phase 4: ArgoCD（v3.6.1）で Application が Synced/Healthy（手動 sync）
 - [ ] Phase 5: auto-sync 有効化。main へ 1 push → 約 5 分以内にクラスタの Deployment image が新しい sha へ一致＝自動デプロイ完成
 - [ ] Phase 6: 公式未記載 3 点（プロファイルのアップグレード挙動／image load の実効性／ingress×podman）の実測結果をこの節に記録
@@ -358,3 +358,10 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 - CI に build-push ジョブ（needs: test、main への push のみ実行）を追加。ワークフロー最上位で `permissions: contents: read / packages: write` を明示（無ければ ghcr push が 403 になる）。イメージタグは ghcr.io/shadowmt/notes-api:<sha 先頭 7 文字>。SHORT_SHA は run ステップから $GITHUB_ENV へ書き出して後続 step の env で参照する定型（env: にシェル展開 $(...) を書いても字面化されて動かない、Actions の罠）。
 - 実測: run 44025163230（commit 3bc4150）で test / build-push とも success、push 先 digest sha256:85e1fe858ca3… をログから確認。
 - 匿名 pull ゲート: ログイン無しの手元 podman で ghcr.io/shadowmt/notes-api:3bc4150 が exit 0 で pull でき、manifest の config digest が CI の push digest と一致。**パッケージはリポジトリ（public）の可視性を継承して自動作成され、手動の public 化操作は不要だった**（初回 push 時点から匿名 pull 可）。
+
+2026-11-17 Phase 3 実施（PASS）:
+- Program.cs に --migrate 分岐を追加（EF 公式の単発マイグレーションコンテナ型: app をビルド → DI スコープから NotesDbContext を解決 → MigrateAsync → HTTP サーバを立てず return。通常起動では分岐に入らず追加動作ゼロ）。k8s/base/migration-job.yaml 新設（Job migrate: 同一イメージ + args ["--migrate"]、restartPolicy Never、backoffLimit 12、ArgoCD 用 annotation 3 種を宣言済み＝ArgoCD 導入前は kubectl に無害に inert）。
+- **PVC 全消しの clean bootstrap**（delete all/job/pvc --all → 旧 PV も Delete 回収で消滅を確認 → apply -k）で job/migrate が 15 秒で Completed。Pod は 1 個 Error（初回の connection refused）+ 1 個 Completed（K8s のバックスオフ再試行）に分かれ、**postgres 起動との待ち合わせはアプリ側リトライコードゼロで Job の backoff だけが吸収**した（公式推奨どおり）。以降 API はホスト側 dotnet ef 一切不要で POST/GET 可能（初回 500 の残件は消滅）。
+- 私（オーケストレーター）による独立再検証: /healthz/ready 200、POST 201（id=1→2→3 と新 DB から連続採番）、GET MARK 一致、psql で Notes と __EFMigrationsHistory（20261114072739_InitialCreate）確認、dotnet build 0W/0E、dotnet test green（--migrate 分岐が WebApplicationFactory 経路を非破壊である証明）。
+- 副次発見: EF のテーブル実体は "Notes"（列名も PascalCase の "Id"）。小文字 id で SQL を書くと「column does not exist」（PSQL 2 度目のエラーは私のクエリ側が原因）。Job の失敗初回試行の終了コードは 139（非 0 なので Job の再試行セマンティクスには無影響。失敗例外を明示コードで落とす設計は今後の検討）。
+- kubectl 直適用では Job `migrate` は再実行されない（同名 Complete 済み Job に再適用は no-op）。再実行したくなったら先に delete job（manifest 冒頭に手順明記）。ArgoCD 導入後は PreSync フックが同期ごとにこれを再生成する。
