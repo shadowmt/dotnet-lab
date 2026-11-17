@@ -6,18 +6,18 @@ kind: Kustomization
 namespace: notes
 
 resources:
-  - namespace.yaml
-  - secret.yaml
-  - migration-job.yaml
-  - postgres-pvc.yaml
-  - postgres-service.yaml
-  - postgres-deployment.yaml
-  - api-deployment.yaml
-  - api-service.yaml
+- namespace.yaml
+- secret.yaml
+- migration-job.yaml
+- postgres-pvc.yaml
+- postgres-service.yaml
+- postgres-deployment.yaml
+- api-deployment.yaml
+- api-service.yaml
 
 # マニフェスト上の image 名 notes-api を、podman build 済みで minikube に読み込んだ
 # ローカルイメージ名（localhost/notes-api:local-dev）へ差し替える。
 images:
-  - name: notes-api
-    newName: localhost/notes-api
-    newTag: local-dev
+- name: notes-api
+  newName: ghcr.io/shadowmt/notes-api
+  newTag: a99efcf
