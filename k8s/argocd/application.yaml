@@ -1,0 +1,19 @@
+# ArgoCD Application CR（Phase 4）。作成は宣言的 kubectl apply のみ（argocd CLI は使わない）。
+# 同期は手動（REST API / UI）。auto-sync（syncPolicy.automated）は Phase 5 で有効化するまで設定しない。
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: notes
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shadowmt/dotnet-lab.git
+    targetRevision: main
+    path: k8s/base
+  destination:
+    # minikube in-cluster の公式既定アドレス。追加のクラスタ登録は不要
+    server: https://kubernetes.default.svc
+    namespace: notes
+  # Phase 4 は手動同期のみ。auto-sync は Phase 5 で有効化する（それまで automated は禁止）
+  syncPolicy: {}
