@@ -44,3 +44,25 @@ jobs:
         env:
           IMAGE: ghcr.io/shadowmt/notes-api:${{ env.SHORT_SHA }}
         run: docker push "$IMAGE"
+
+  # build-push 後のタグ書き戻し工程: ghcr.io のイメージタグを kustomization に反映して main へ push し直す（ArgoCD の auto-sync が拾う）。GITHUB_TOKEN による push は GitHub 公式仕様でワークフローを再発動しないうえ、コミットメッセージの [skip ci] も第 2 の保険として効くため CI ループは起きない。
+  update-tag:
+    needs: build-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Export short SHA
+        run: echo "SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-7)" >> "$GITHUB_ENV"
+
+      - name: Update image tag and push back to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41176060+github-actions[bot]@users.noreply.github.com"
+          cd k8s/base
+          kustomize edit set image notes-api=ghcr.io/shadowmt/notes-api:${SHORT_SHA}
+          cd ../..
+          git diff --quiet -- k8s/base/kustomization.yaml && echo "no tag change" || { git add k8s/base/kustomization.yaml && git commit -m "ci: update notes-api image tag to ${SHORT_SHA} (auto) [skip ci]" && git push origin HEAD:main; }
