@@ -331,7 +331,7 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 - [x] Phase 3: マイグレーションが単発 PreSync Job 化。Job Completed → API Pod Healthy の順が守られる
 - [x] Phase 4: ArgoCD（v3.6.1）で Application が Synced/Healthy（手動 sync）
 - [x] Phase 5: auto-sync 有効化（prune+selfHeal）。main へ 1 push → CI がイメージを build-push し、書き戻しコミット（image tag）を介してクラスタの Deployment image が新しい sha へ一致＝自動デプロイ完成（実測 3 分 54 秒、`GITHUB_TOKEN` の push で CI は再発火せずループ不成立も実測）
-- [ ] Phase 6: 公式未記載 3 点（プロファイルのアップグレード挙動／image load の実効性／ingress×podman）の実測結果をこの節に記録
+- [x] Phase 6: 公式未記載 3 点（プロファイルのアップグレード挙動／image load の実効性／ingress×podman）の実測結果をこの節に記録（①②=Phase 0 実施メモ、③=Phase 6 実施メモ）
 
 ### 採用決定（2026-11-17・すべて推奨案で承認済み）
 - 露出: port-forward 先行（ingress アドオンは Phase 4 以降の実測枠）
@@ -384,3 +384,11 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 - 教訓: 開発機に `kustomize` 単体バイナリは無い（CI ランナー ubuntu-latest にはプリインストール済み）ので、レンダリング検証は `kubectl kustomize` で等価に実施（実ツリーでなく /tmp コピーへ編集を再現して検証するのが安全）。`LC_ALL=C grep -P` はマルチバイトをバイト単位で照合し全日本語に誤発火する（文字集合チェックは UTF-8 で実施）。
 - 委譲（remote 子・編集のみ）→ 本体再検証の分担: 差分は意図の 2 ファイルのみ／YAML パース・`bash -n`・自前 /tmp レンダリング（Deployment と Job 両方が images の name キー書き換えで切り替わることを実証、postgres 無傷）で受領。
 - 注意: この docs コミットも以後同じ自動サイクル（CI→書き戻し→auto-sync）に巻き込まれ、クラスタのイメージは追随する（マイグレーションは no-op でデータ影響なし＝自動運用の正常な副作用）。
+
+2026-11-17 Phase 6 実施（PASS＝③の実測結論記録。Task 10 完）:
+- ③ ingress アドオン×podman driver（rootless）の実測結論: **有効化自体は成功**（`minikube addons enable ingress` が 18.9 秒・exit 0、ingress-nginx controller v1.15.1 + IngressClass nginx が稼働開始）。`--timeout` フラグは addons enable に存在しない（v1.39 の help で確認。失敗時は help 直視で足りる仕様照会の例外）。
+- GitOps 側は成功: `k8s/base/ingress.yaml`（host=notes.localhost → svc notes-api:80）を kustomize に追加して push → **約 2 分 22 秒で ArgoCD auto-sync が Ingress を作成**、controller が `updating Ingress status → 192.168.49.2` を記録（Ingress status の ADDRESS 採番まで確認）。port-forward + Host ヘッダ経路で **健全期には完全な機能が実証**された: `Host: notes.localhost` のみ GET 200・**POST 201（id=6, id=7）→ GET 一致の往復**、無 Host リクエストは nginx default backend の **404**（Host 特異性 OK）、`verify-p6-*` の往復レコードはクラスタ DB に残存。
+- **クラスタ外露出は機構的に不可**（rootless 固有・公式記載なし）: `minikube ip`(192.168.49.2) への `:80`/`:30279`(NodePort)/API`8443` 直叩きが全部 000。正体は kic（docker/podman）コンテナが**起動時に公開したポートしか bind しない**仕様で、kubeconfig は podman の公開先 `127.0.0.1:44566`（32443/tcp）へ通っていた。公式の到達経路は `kubectl port-forward`（実測済・今回の学習クラスタの標準経路に採用）か `minikube service --url`。`minikube tunnel` は rootless podman では**事実上サポート外**（公式記載ゼロ、kubernetes/minikube#14932 が rootless 起因報告のまま Not Planned クローズ）。`--ports="80:30279"` は docker/podman 専用フラグとして存在するがクラスタ再作成が前提で、rootless で 1024 未満を bind できる保証も記載なし（未実施）。参考: https://minikube.sigs.k8s.io/docs/handbook/accessing/
+- **恒久不具合の実測（これは③の核心。公式に一切記載なし）**: rootless-pasta 環境で ingress-nginx の**データプレーンが慢性的に死んでいる**。起動直後に `pthread_create() failed (11: Resource temporarily unavailable)` で worker 即死→`cannot be respawned`（worker=1 減量＝ConfigMap `worker-process-count` への key 追加で緩和を試みたが恒久化せず）、運用後も断続的に worker が枯れて (a) リクエストがハング（curl 000）、(b) **nginx 由来でない疑似応答**（`HTTP/1.1 200 / Content-Length: 0 / text/html` が返るのに nginx アクセスログに当該リクエストが皆無＝upstream ストリーム断絶期の擬答）を返す。kic コンテナの Max processes は 224925 と大きく、pids 枯渇では無い（真因は切り切れず＝未解決）。**健全期と死滅期が混在する状態そのものが実測結論**であり、公開用途の ingress には ingress-nginx 非対応の rootless podman ではなく docker driver か rootful が必要。
+- 副次教訓（自身の運用ミス由来の実測）: `pkill -f` は**自分を実行中の bash -c ウラッパの cmdline にも一致して自死させる**（ハーネスが `Unknown: ChildProcess.kill` を返す）。port-forward の掃除は起動スクリプト内で `kill $!`（明示 PID）のみ。誤った掃除が nginx プロキシハンドラの socket を壊す事故も 1 回観測（07:35 の初回 worker 死滅の契機。以後 kill は明示 PID 化で再発ゼロ）。
+- 副次教訓（kubectl wait）: `wait --for=condition=Ready pod --all` は完了済み Job Pod（Ready=False のまま）を含めると必ず timeout する。Selector は `component=controller` 等の生存 Pod 専用に絞るか、Pod の Ready condition を jsonpath で直接見る。Job 完了判定は `wait --for=condition=complete job/...`（Phase 3/4 実施メモと同根の続報）。
