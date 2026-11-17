@@ -1,5 +1,5 @@
-# ArgoCD Application CR（Phase 4）。作成は宣言的 kubectl apply のみ（argocd CLI は使わない）。
-# 同期は手動（REST API / UI）。auto-sync（syncPolicy.automated）は Phase 5 で有効化するまで設定しない。
+# ArgoCD Application CR（Phase 4 で作成、Phase 5 で auto-sync 有効化）。作成は宣言的 kubectl apply のみ（argocd CLI は使わない）。
+# Phase 5 より同期は自動化（syncPolicy.automated）。手動同期（REST API / UI）は不要になる。
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -15,5 +15,8 @@ spec:
     # minikube in-cluster の公式既定アドレス。追加のクラスタ登録は不要
     server: https://kubernetes.default.svc
     namespace: notes
-  # Phase 4 は手動同期のみ。auto-sync は Phase 5 で有効化する（それまで automated は禁止）
-  syncPolicy: {}
+  # Phase 5 より auto-sync 有効化。prune: true で Git から消えたリソースを同期時に削除し、selfHeal: true でクラスタ側の手動変更を Git の状態へ自動復元する。
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
