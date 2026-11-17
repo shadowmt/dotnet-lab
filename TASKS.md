@@ -325,11 +325,11 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 このマシン（WSL2・docker バイナリ無し・podman 5.7 rootless）で minikube を podman ドライバで動かし、notes-api + PostgreSQL 17 のマニフェストをクラスタ上で駆動、さらに ArgoCD で main への push が自動デプロイされる GitOps の流れまで作る。公式ドキュメントで挙動が未記載の点は、計画に「実測ゲート」として明示的に組み込む（本ラボの実測主義と同じ扱い）。
 
 ### 合格条件（実測）
-- [ ] Phase 0: `kubectl get nodes` が Ready。podman build したイメージをクラスタへ供給し smoke Pod が Succeeded（①②は実施メモ参照）
+- [x] Phase 0: `kubectl get nodes` が Ready。podman build したイメージをクラスタへ供給し smoke Pod が Succeeded（①②は実施メモ参照。③ ingress×podman は Phase 6 の記録枠）
 - [x] Phase 1: k8s マニフェストで api + postgres が起動。`/healthz/ready` 200、POST/GET ラウンドトリップ、Pod 再作成後もデータ残存（PVC 実証）
 - [x] Phase 2: CI がビルドして ghcr.io へ push（公開パッケージ。手元 `podman pull` が匿名で成功すること）
 - [x] Phase 3: マイグレーションが単発 PreSync Job 化。Job Completed → API Pod Healthy の順が守られる
-- [ ] Phase 4: ArgoCD（v3.6.1）で Application が Synced/Healthy（手動 sync）
+- [x] Phase 4: ArgoCD（v3.6.1）で Application が Synced/Healthy（手動 sync）
 - [ ] Phase 5: auto-sync 有効化。main へ 1 push → 約 5 分以内にクラスタの Deployment image が新しい sha へ一致＝自動デプロイ完成
 - [ ] Phase 6: 公式未記載 3 点（プロファイルのアップグレード挙動／image load の実効性／ingress×podman）の実測結果をこの節に記録
 
@@ -365,3 +365,12 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 - 私（オーケストレーター）による独立再検証: /healthz/ready 200、POST 201（id=1→2→3 と新 DB から連続採番）、GET MARK 一致、psql で Notes と __EFMigrationsHistory（20261114072739_InitialCreate）確認、dotnet build 0W/0E、dotnet test green（--migrate 分岐が WebApplicationFactory 経路を非破壊である証明）。
 - 副次発見: EF のテーブル実体は "Notes"（列名も PascalCase の "Id"）。小文字 id で SQL を書くと「column does not exist」（PSQL 2 度目のエラーは私のクエリ側が原因）。Job の失敗初回試行の終了コードは 139（非 0 なので Job の再試行セマンティクスには無影響。失敗例外を明示コードで落とす設計は今後の検討）。
 - kubectl 直適用では Job `migrate` は再実行されない（同名 Complete 済み Job に再適用は no-op）。再実行したくなったら先に delete job（manifest 冒頭に手順明記）。ArgoCD 導入後は PreSync フックが同期ごとにこれを再生成する。
+
+2026-11-17 Phase 4 実施（PASS）:
+- ArgoCD v3.6.1 インストール: GitHub release アセットには install.yaml が同梱されず（バイナリ tarball 等の 3 点のみ）、公式タグの raw.githubusercontent.com 上 install.yaml を直接 apply した（同一内容保証の範囲で可）。CRD 定義がアノテーション上限 262144 bytes を超えるためクライアント側 apply は metadata.annotations too long で失敗 → `kubectl -n argocd apply --server-side --force-conflicts -f ...`（server-side apply で回避できることを実証）。6 Deployment + application-controller（StatefulSet）がすべて Running、UI は port-forward 18443:443 経由で HTTP 200。
+- Application CR は `k8s/argocd/application.yaml`（source: 同一リポジトリ main / path: k8s/base、destination: in-cluster 公式既定の `https://kubernetes.default.svc` / namespace notes）。採用決定どおり argocd CLI は導入せず、作成は宣言的 kubectl apply のみ。初回比較は検出 8 リソースで `OutOfSync / Healthy`（OutOfSync は Phase 1-3 の kubectl 直適用分の吸収。同期後 Synced 固定で drift 残存なし）。
+- 手動同期は REST API（port-forward + curl）で実施。v3.6 ではログインが `POST /api/v1/session`（2.x ドキュメントの `/api/login` は実測 404）。admin 初期パスワードは secret argocd-initial-admin-secret から取り出し（平文はどこにも出力せず）→ `POST /api/v1/applications/notes/sync` → HTTP 200 → **12 秒で `notes Synced / Healthy`**（operationState.phase=Succeeded "successfully synced (all tasks run)"、syncRev=f9ed9ae＝同期時 main HEAD＝repo-server の clone 成功）。
+- **合格条件の述語を訂正 1（Phase 5 以降に必須）**: v3.6.1 で `status.sync.status` の成功時値は実測 `Synced`。`Succeeded` は別フィールド `status.operationState.phase` の値で、当初条件 `--for=jsonpath='{.status.sync.status}'=Succeeded` は 2 つの取り違えでありリテラルでは時間切れ（exit 1 を 300s 本走 + 20s 再現の 2 回実測）。訂正述語 `=Synced` / `=Healthy` は exit 0（0.7s / 1.1s）。公式（release-3.6）も auto_sync と notifications/triggers で両値の住み分けを明記。同期確定の実証（op.phase=Succeeded + Synced/Healthy）がゲートの意図であり PASS 判定。
+- **合格条件の前提を訂正 2**: v3.6.1 の PreSync フック Job はランダムサフィックス付きへ**リネームされない**（当初想定 `migrate-<suffix>` は不成立）。実測は `hook-delete-policy: BeforeHookCreation` による**同名 `job/migrate` の削除→再作成**（作成 06:14:15Z＝同期中、tracking-id notes:batch/Job:notes/migrate、Pod migrate-pqtb7 Completed。Phase 3 由来の旧 Job/Pod は削除で消滅）。Phase 5 の auto-sync 運用でも同期ごとに同名削除/作成が繰り返される見込み → hook-delete-policy に HookSucceeded を足す運用は今後の検討事項。
+- 私（オーケストレーター）による独立再検証: `notes Synced/Healthy`・op.phase=Succeeded・syncRev=f9ed9ae、argocd の Pod 7 個すべて Running、job/migrate の名前/作成時刻/tracking-id 上記とおり、port-forward 残留ゼロ、シークレット平文漏れなし。アプリ非退行は子実測で ready 200 / POST 201（id=4）/ GET 一致。
+- セキュリティ: admin パスワードは初期値のまま（ローカル学習クラスタ。UI は port-forward のみで ingress 露出なし）。公開したのは Application CR と Task 記録のみ。
