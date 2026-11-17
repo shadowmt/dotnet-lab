@@ -330,7 +330,7 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 - [x] Phase 2: CI がビルドして ghcr.io へ push（公開パッケージ。手元 `podman pull` が匿名で成功すること）
 - [x] Phase 3: マイグレーションが単発 PreSync Job 化。Job Completed → API Pod Healthy の順が守られる
 - [x] Phase 4: ArgoCD（v3.6.1）で Application が Synced/Healthy（手動 sync）
-- [ ] Phase 5: auto-sync 有効化。main へ 1 push → 約 5 分以内にクラスタの Deployment image が新しい sha へ一致＝自動デプロイ完成
+- [x] Phase 5: auto-sync 有効化（prune+selfHeal）。main へ 1 push → CI がイメージを build-push し、書き戻しコミット（image tag）を介してクラスタの Deployment image が新しい sha へ一致＝自動デプロイ完成（実測 3 分 54 秒、`GITHUB_TOKEN` の push で CI は再発火せずループ不成立も実測）
 - [ ] Phase 6: 公式未記載 3 点（プロファイルのアップグレード挙動／image load の実効性／ingress×podman）の実測結果をこの節に記録
 
 ### 採用決定（2026-11-17・すべて推奨案で承認済み）
@@ -374,3 +374,13 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 - **合格条件の前提を訂正 2**: v3.6.1 の PreSync フック Job はランダムサフィックス付きへ**リネームされない**（当初想定 `migrate-<suffix>` は不成立）。実測は `hook-delete-policy: BeforeHookCreation` による**同名 `job/migrate` の削除→再作成**（作成 06:14:15Z＝同期中、tracking-id notes:batch/Job:notes/migrate、Pod migrate-pqtb7 Completed。Phase 3 由来の旧 Job/Pod は削除で消滅）。Phase 5 の auto-sync 運用でも同期ごとに同名削除/作成が繰り返される見込み → hook-delete-policy に HookSucceeded を足す運用は今後の検討事項。
 - 私（オーケストレーター）による独立再検証: `notes Synced/Healthy`・op.phase=Succeeded・syncRev=f9ed9ae、argocd の Pod 7 個すべて Running、job/migrate の名前/作成時刻/tracking-id 上記とおり、port-forward 残留ゼロ、シークレット平文漏れなし。アプリ非退行は子実測で ready 200 / POST 201（id=4）/ GET 一致。
 - セキュリティ: admin パスワードは初期値のまま（ローカル学習クラスタ。UI は port-forward のみで ingress 露出なし）。公開したのは Application CR と Task 記録のみ。
+
+2026-11-17 Phase 5 実施（PASS）:
+- auto-sync の生効手順: Application CR 自体は ArgoCD の自己管理対象外なので、Git 上の `k8s/argocd/application.yaml` を `kubectl -n argocd apply` でクラスタへ適用する一手順が必須（app-of-apps は今回合わない＝学習メモ）。`syncPolicy={"automated":{"prune":true,"selfHeal":true}}` を live で確認してから push に臨んだ。
+- CI に update-tag ジョブを追加（needs: build-push、main への push のみ、job レベル `permissions: contents: write`＝ワークフローレベルの read より格上げは job 単位で可）。checkout@v7 の既定トークンで `kustomize edit set image notes-api=ghcr.io/shadowmt/notes-api:<sha 先頭 7 文字>` → github-actions[bot] 名義で条件付きコミット（差分がなければ no tag change で終了）→ `git push origin HEAD:main`（detached HEAD だが fast-forward なので force 不要）。
+- 1 push の実測タイムライン（push a99efcf=07:13:08Z）: run 44036994889 で test / build-push / update-tag すべて success → 書き戻しコミット **a7dc363**（message「ci: update notes-api image tag to a99efcf (auto) [skip ci]」author=github-actions[bot]、07:15:52 push、当該コミットの kustomization は newName=ghcr.io/shadowmt/notes-api / newTag=a99efcf を gh api とローカル git show の両方で一致確認）→ ArgoCD auto-sync（PreSync の job/migrate 再作成 07:16:48Z＝同期中・同名置換継続、op.phase=Succeeded）→ **クラスタ Deployment image が ghcr.io/shadowmt/notes-api:a99efcf へ一致 07:17:02Z＝push から自動デプロイ完了まで 3 分 54 秒**。合格条件の約 5 分枠は内側で成立（述語の訂正不要。`Synced`/`Healthy` 確認済）。CI 全体（test+build-push+update-tag）は約 2 分 44 秒で、残りは ArgoCD の既定ポーリング（3 分）窓に収まった。
+- **CI ループ不成立の実証**: 書き戻しコミット a7dc363 に対応するワークフロー run は**ゼロ**（gh run list 直近 5 件の headSha に不一致＝「GITHUB_TOKEN の push は再発火しない」GitHub 公式挙動を自 repo で実測）。第 2 保険の [skip ci] は出番なし。
+- デプロイ実測: 新 RS 1/1 Ready・旧 RS 0（rollout status 成功）、migrate Job は ghcr タグイメージで再実行され no-op 完了（データ無傷＝verify-p4 レコード生存）。機能往復 ready 200 / POST 201（id=5）/ GET 一致、port-forward 残留ゼロ。
+- 教訓: 開発機に `kustomize` 単体バイナリは無い（CI ランナー ubuntu-latest にはプリインストール済み）ので、レンダリング検証は `kubectl kustomize` で等価に実施（実ツリーでなく /tmp コピーへ編集を再現して検証するのが安全）。`LC_ALL=C grep -P` はマルチバイトをバイト単位で照合し全日本語に誤発火する（文字集合チェックは UTF-8 で実施）。
+- 委譲（remote 子・編集のみ）→ 本体再検証の分担: 差分は意図の 2 ファイルのみ／YAML パース・`bash -n`・自前 /tmp レンダリング（Deployment と Job 両方が images の name キー書き換えで切り替わることを実証、postgres 無傷）で受領。
+- 注意: この docs コミットも以後同じ自動サイクル（CI→書き戻し→auto-sync）に巻き込まれ、クラスタのイメージは追随する（マイグレーションは no-op でデータ影響なし＝自動運用の正常な副作用）。
