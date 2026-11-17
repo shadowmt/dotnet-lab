@@ -318,3 +318,31 @@ podman exec dotnet-lab-db psql -U app -d lab -c '\dt'：lab内のテーブル一
 6. 実測: 初回 `dotnet test` 12 秒で PASS（イメージ pull + コンテナ起動込み）、2 回目 1 秒台 PASS、2 回実行後も残余コンテナなし。
 7. 2026-11-17 実施: remote へ push（main を 077b504..84adb93、3 コミット）し GitHub Actions 初回実測済み。ワークフロー「test」run 44004309677（headSha 84adb93）が conclusion=success。https://github.com/shadowmt/dotnet-lab/actions/runs/44004309677 。CI ランナーは docker 同梱のため `DOCKER_HOST` 不要で、Testcontainers が CI 上でも postgres:17 を起動して統合テストが green になった（ローカルと同コードで通ることを実証）。
 8. 2026-11-17 再検証: Task 5 の教訓（ConfigureAppConfiguration 案は Program が使う接続先を上書きできない）は Testcontainers 化後も有効なまま。`ConfigureWebHost` 内の `builder.ConfigureAppConfiguration` で `ConnectionStrings:NotesDb` をコンテナ値へ差し替える変種をスクラッチ probe で実測し、登録済み DbContext の接続文字列は依然 `Database=lab` に解決された（probe は接続文字列文字列の読み取りのみで DB には一切接続していない）。なお Mvc.Testing 10.0.4 では `WebApplicationFactory.ConfigureAppConfiguration(IConfigurationBuilder)` の単一引数オーバーライドは廃止されており、オーバーライドはコンパイル不可。config 系の実験は必ず `ConfigureWebHost` 経由で書くこと。
+
+## Task 10（追加）: k8s + GitOps 実践 — minikube + ArgoCD でアプリ+DB を駆動
+
+### 目的
+このマシン（WSL2・docker バイナリ無し・podman 5.7 rootless）で minikube を podman ドライバで動かし、notes-api + PostgreSQL 17 のマニフェストをクラスタ上で駆動、さらに ArgoCD で main への push が自動デプロイされる GitOps の流れまで作る。公式ドキュメントで挙動が未記載の点は、計画に「実測ゲート」として明示的に組み込む（本ラボの実測主義と同じ扱い）。
+
+### 合格条件（実測）
+- [ ] Phase 0: `kubectl get nodes` が Ready。podman build したイメージをクラスタへ供給し smoke Pod が Succeeded（①②は実施メモ参照）
+- [ ] Phase 1: k8s マニフェストで api + postgres が起動。`/healthz/ready` 200、POST/GET ラウンドトリップ、Pod 再作成後もデータ残存（PVC 実証）
+- [ ] Phase 2: CI がビルドして ghcr.io へ push（公開パッケージ。手元 `podman pull` が匿名で成功すること）
+- [ ] Phase 3: マイグレーションが単発 PreSync Job 化。Job Completed → API Pod Healthy の順が守られる
+- [ ] Phase 4: ArgoCD（v3.6.1）で Application が Synced/Healthy（手動 sync）
+- [ ] Phase 5: auto-sync 有効化。main へ 1 push → 約 5 分以内にクラスタの Deployment image が新しい sha へ一致＝自動デプロイ完成
+- [ ] Phase 6: 公式未記載 3 点（プロファイルのアップグレード挙動／image load の実効性／ingress×podman）の実測結果をこの節に記録
+
+### 採用決定（2026-11-17・すべて推奨案で承認済み）
+- 露出: port-forward 先行（ingress アドオンは Phase 4 以降の実測枠）
+- DB: Deployment+PVC（k8s 公式の単一 stateful アプリ手順と同形）
+- マイグレーション: 同一イメージの `--migrate` 引数単発 Job（ArgoCD フック `PreSync` + `sync-wave: "-1"` + `hook-delete-policy: BeforeHookCreation`）
+- タグ供給: CI が kustomize のイメージ行を書き戻して push（`GITHUB_TOKEN`。同トークンの push がワークフローを再発火しないことは GitHub 公式記載＝ループ不成立）
+- マニフェスト: 同一リポジトリ `/k8s`（kustomize）。レジストリ: ghcr.io 公開。ArgoCD 操作: Application CR の宣言的 kubectl apply のみ（argocd CLI は導入しない）
+
+### 実施メモ
+
+2026-11-17 Phase 0 実施（PASS。公式未記載だった ①② がここで確定）:
+- ① プロファイルのアップグレード: minikube v1.39.0（現行安定）で v1.37.0 作成のプロファイルを `minikube start` すると、そのまま再利用できた（`minikube delete` 不要・ノードコンテナは 6d19h のまま健在）。起動ログに `MINIKUBE_ROOTLESS=true` と出るとおり rootless podman が自動判定され、**パスワードなし sudo／sudoers 変更は一切不要**（`/etc/subuid` の 100000:65536 設定は済んでいた）。`kubectl get nodes` Ready（k8s v1.37.0 / containerd 2.3.4 / 192.168.49.2）。なお `Error downloading kic artifacts: not yet implemented` は既知の无害ログノイズ（kubernetes/minikube#8426）で、base image pull 自体は成功している。ログで決めない教訓（Task 5）の k8s 版。
+- ② イメージ供給: `minikube image load` に `DOCKER_HOST` を渡さないと、参照の `localhost/` を**レジストリホスト名として解釈**し `https://localhost/v2/` へタイムアウト到達後に「not found」と化ける（しかも exit 0。失敗の検知は `minikube image ls` の実査で行う）。手順は `systemctl --user start podman`（socket は idle 時 inactive になり得る）→ `DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock minikube image load localhost/<tag>` → `minikube image ls | grep <tag>` で載ったことを確認。smoke Pod は imagePullPolicy=IfNotPresent で Succeeded、logs に hello、imageID は podman build のイメージ ID と一致。**podman build 既定の OCI 形式のまま変換不要**（docs が警戒した `--format docker` は不要と実証）。
+- ③ ingress アドオン×podman ドライバは未実測のまま Phase 4 ゲートへ持ち越し（公式に可否の記載なし）。
