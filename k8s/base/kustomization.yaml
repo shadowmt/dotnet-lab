@@ -14,6 +14,7 @@ resources:
 - postgres-deployment.yaml
 - api-deployment.yaml
 - api-service.yaml
+- ingress.yaml
 
 # マニフェスト上の image 名 notes-api を、podman build 済みで minikube に読み込んだ
 # ローカルイメージ名（localhost/notes-api:local-dev）へ差し替える。

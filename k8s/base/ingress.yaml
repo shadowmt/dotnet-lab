@@ -1,0 +1,21 @@
+# Phase 6: notes-api を ingress で露出（minikube の ingress addon = nginx クラス）。
+# kubectl 直適用でなく ArgoCD の auto-sync 経由で適用する（Git が唯一の変更経路）。
+# host の notes.localhost は minikube の慣習。クラスタ外からの名前解決・到達は
+# 別途 ingress-dns addon か hosts/--resolve が必要（実測は TASKS.md Phase 6 記録）。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: notes-api
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: notes.localhost
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: notes-api
+            port:
+              number: 80
