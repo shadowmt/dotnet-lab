@@ -17,6 +17,18 @@ builder.Services.AddOpenApi();
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();
+
+// Kubernetes の単発マイグレーション Job 用。同一イメージを `--migrate` 付きで起動すると、
+// HTTP サーバを立てず DB マイグレーションのみ適用して終了する（EF Core 公式パターン）。
+// 通常起動（引数なし）ではこの分岐に入らず、追加動作はゼロ。
+if (args.Contains("--migrate"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<NotesDbContext>();
+    await db.Database.MigrateAsync();
+    return;
+}
+
 app.UseStatusCodePages();
 
 // Configure the HTTP request pipeline.

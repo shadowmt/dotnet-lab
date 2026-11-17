@@ -1,0 +1,43 @@
+# EF Core マイグレーションの単発 Job（同一 api イメージに --migrate を付けて一度だけ実行）。
+# API レプリカとは別に走らせることで、全レプリカが起動時にマイグレーションする競合を避ける。
+# postgres の起動完了とは待機しない。connection refused は backoffLimit による
+# Kubernetes のバックスオフ再試行で吸収させる（アプリ側にリトライコードは書かない）。
+#
+# 注意: ArgoCD 導入後は PreSync フックとして同期ごとに先行実行される
+# （BeforeHookCreation で前回ジョブは自動削除）。kubectl 直適用ではこれらの
+# annotation を無視して毎回 Job を作成しようとする。同名 Job が Completed で
+# 残っている状態での再適用は不変リソースの更新として通るが、Job を再実行させ
+# たくなったら先に `kubectl -n notes delete job migrate` すること。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  labels:
+    app: notes-migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  # postgres 初期化完了までの connection refused を再試行で耐える上限
+  backoffLimit: 12
+  template:
+    metadata:
+      labels:
+        app: notes-migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          # api と同一イメージ。kustomization の images: 変換で localhost/notes-api:local-dev に差し替わる。
+          # command（Dockerfile ENTRYPOINT = dotnet NotesApi.dll）は上書きせず、args だけで --migrate を渡す。
+          image: notes-api
+          args: ["--migrate"]
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: notes-api-config
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi

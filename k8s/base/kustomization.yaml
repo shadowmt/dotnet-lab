@@ -8,6 +8,7 @@ namespace: notes
 resources:
   - namespace.yaml
   - secret.yaml
+  - migration-job.yaml
   - postgres-pvc.yaml
   - postgres-service.yaml
   - postgres-deployment.yaml
